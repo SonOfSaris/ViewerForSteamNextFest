@@ -253,6 +253,13 @@
         <option value="no">No reviews yet</option>
       </select>
     </label>
+    <label class="fp-item">Release status
+      <select id="statusFilter" title="Filter by whether the full game is out yet (as of the export)">
+        <option value="">Any status</option>
+        <option value="released">Released</option>
+        <option value="upcoming">Upcoming</option>
+      </select>
+    </label>
     <label class="fp-item">Full game release
       <select id="releaseFilter" title="Filter by the full game's announced release date">
         <option value="">Any release</option>
@@ -386,7 +393,7 @@ function ingest(data) {
   if (!hasAi) $("aiFilter").value = "";
   buildTagPanel(DEMOS);
   const m = data.meta || {};
-  // "Steam Next Fest June 2026" -> "June 2026" (the title already says the rest)
+  // "Steam Next Fest October 2026" -> "October 2026" (the title already says the rest)
   const period = (m.source || "").replace(/^Steam Next Fest\s*/i, "").trim();
   // (demo count is already shown in the count badge, so omit it here)
   const parts = [
@@ -423,6 +430,12 @@ function relText(d) {
 function fullReleaseTs(d) {
   const t = d.full_release_date ? Date.parse(d.full_release_date) : NaN;
   return Number.isNaN(t) ? Infinity : t;
+}
+// Full-game status at export time: "upcoming" | "released" | "" (unknown).
+// Steam omits is_coming_soon once a game is out, so released = has a date and isn't flagged coming-soon.
+function releaseStatus(d) {
+  if (d.full_is_coming_soon === true) return "upcoming";
+  return d.full_release_date ? "released" : "";
 }
 // Human label honoring the announced precision (exact date / month / quarter / year / TBA).
 function fullReleaseText(d) {
@@ -474,7 +487,7 @@ function buildTagPanel(demos) {
 }
 
 function updateFilterButton() {
-  const n = ["reviewFilter", "releaseFilter", "aiFilter"].filter(id => $(id).value).length;
+  const n = ["reviewFilter", "statusFilter", "releaseFilter", "aiFilter"].filter(id => $(id).value).length;
   const b = $("filterToggle");
   b.textContent = "Filters" + (n ? ` (${n})` : "") + " ▾";
   b.classList.toggle("active", n > 0);
@@ -516,6 +529,7 @@ function saveFilters() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       q: $("q").value,
       reviewFilter: $("reviewFilter").value,
+      statusFilter: $("statusFilter").value,
       releaseFilter: $("releaseFilter").value,
       aiFilter: $("aiFilter").value,
       sort: $("sort").value,
@@ -534,6 +548,7 @@ function restoreFilters() {
   if (!s) return;
   if (typeof s.q === "string") $("q").value = s.q;
   if (typeof s.reviewFilter === "string") $("reviewFilter").value = s.reviewFilter;
+  if (typeof s.statusFilter === "string") $("statusFilter").value = s.statusFilter;
   if (typeof s.releaseFilter === "string") $("releaseFilter").value = s.releaseFilter;
   if (typeof s.aiFilter === "string" && !$("aiFilter").disabled) $("aiFilter").value = s.aiFilter;
   if (s.sort) $("sort").value = s.sort;
@@ -635,6 +650,7 @@ function apply() {
   const mode = $("tagMode").value;           // "any" | "all"
   const sel = selectedTags;
   const reviewF = $("reviewFilter").value;   // "" | "yes" | "no"
+  const statusF = $("statusFilter").value;   // "" | "released" | "upcoming"
   const releaseF = $("releaseFilter").value; // "" | "dated" | "undated"
   const aiF = $("aiFilter").value;           // "" | "yes" | "no"
 
@@ -646,6 +662,7 @@ function apply() {
       if (reviewF === "yes" && !hasRev) return false;
       if (reviewF === "no" && hasRev) return false;
     }
+    if (statusF && releaseStatus(d) !== statusF) return false;
     if (releaseF) {
       const hasDate = !!d.full_release_date;
       if (releaseF === "dated" && !hasDate) return false;
@@ -687,7 +704,7 @@ function apply() {
 
   updateTagHint();
   updateFilterButton();
-  $("clear").hidden = !(q || sel.size || reviewF || releaseF || aiF);
+  $("clear").hidden = !(q || sel.size || reviewF || statusF || releaseF || aiF);
   $("count").textContent = `${filtered.length.toLocaleString()} of ${DEMOS.length.toLocaleString()}`;
   $("empty").hidden = filtered.length > 0;
 
@@ -809,6 +826,7 @@ let qTimer = null;
 $("q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(apply, 150); });
 $("sort").addEventListener("change", apply);
 $("reviewFilter").addEventListener("change", apply);
+$("statusFilter").addEventListener("change", apply);
 $("releaseFilter").addEventListener("change", apply);
 $("aiFilter").addEventListener("change", apply);
 $("sortDir").addEventListener("click", () => {
@@ -821,6 +839,7 @@ $("sortDir").addEventListener("click", () => {
 $("clear").addEventListener("click", () => {
   $("q").value = "";
   $("reviewFilter").value = "";
+  $("statusFilter").value = "";
   $("releaseFilter").value = "";
   if (!$("aiFilter").disabled) $("aiFilter").value = "";
   setAllTags(false);
