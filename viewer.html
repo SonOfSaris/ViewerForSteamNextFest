@@ -85,7 +85,9 @@
   .rcount { font-size: 11px; color: #8f98a0; white-space: nowrap; }
   .dates { font-size: 11px; color: #8f98a0; white-space: nowrap; }
   .dates strong { color: #c7d5e0; font-weight: 600; }
-  .ai-row { margin-top: 1px; }
+  .ai-row { margin-top: 1px; display: flex; flex-wrap: wrap; gap: 3px; }
+  .ai-chip.cat { background: transparent; border: 1px solid #5a3a78; color: #c9b3ee; font-weight: 500; padding: 0 6px; }
+  .ai-chip.cat.soft { border-color: #2a3f55; color: #8f98a0; }
   .ai-chip { display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
   .ai-chip.yes { background: #5a3a78; color: #e3d2ff; }
   .ai-chip.no { background: #21364a; color: #6f8296; }
@@ -114,7 +116,7 @@
     border-radius: 4px; padding: 7px 10px; font: inherit; cursor: pointer;
   }
   .tagbtn.active { border-color: #66c0f4; color: #fff; }
-  #tagPanel { background: #16212e; border-bottom: 1px solid #0e1722; padding: 10px 16px; }
+  #tagPanel, #aiPanel { background: #16212e; border-bottom: 1px solid #0e1722; padding: 10px 16px; }
   .tp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
   .tp-head input {
     background: #0e1722; color: #c7d5e0; border: 1px solid #2a3f55;
@@ -142,6 +144,13 @@
   #tagPinned { padding: 2px 2px 0; }
   .tg.pinned { font-weight: 600; color: #cfe; border-bottom: 1px dashed #2a3f55; padding-bottom: 6px; margin-bottom: 2px; }
   .tp-hint { font-size: 11px; color: #66c0f4; min-height: 14px; margin: 2px 0 6px; }
+  /* AI panel: grouped checkbox grid */
+  .ai-list { max-height: none; }
+  .ai-group { grid-column: 1 / -1; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #8f98a0; margin: 8px 0 2px; }
+  .ai-group:first-child { margin-top: 2px; }
+  .ai-note { grid-column: 1 / -1; font-size: 12px; color: #8f98a0; padding: 3px 4px; }
+  .tp-note { font-size: 11px; color: #8f98a0; }
 
   /* ---- Filters panel ---- */
   #filterPanel { background: #16212e; border-bottom: 1px solid #0e1722; padding: 10px 16px; }
@@ -211,9 +220,10 @@
   <img id="dropLogo" class="drop-logo" alt="">
   <h1>Viewer for Steam Next Fest</h1>
   <p>Drop the exported <code>nextfest_demos_*.json</code> here, or pick it below.
+     Add <code>ai_categories.json</code> too (now or later) to filter by how AI was used.
      Everything stays local in your browser.</p>
   <button class="pickbtn" id="pick">Choose JSON file</button>
-  <input type="file" id="file" accept="application/json,.json" hidden>
+  <input type="file" id="file" accept="application/json,.json" multiple hidden>
   <p id="dropErr" class="err"></p>
 </div>
 
@@ -224,6 +234,7 @@
   <input type="search" id="q" placeholder="Search name, developer, tag…">
   <button class="tagbtn" id="tagToggle" type="button">Tags ▾</button>
   <button class="tagbtn" id="filterToggle" type="button">Filters ▾</button>
+  <button class="tagbtn" id="aiToggle" type="button" title="Filter by AI disclosure and what AI was used for">AI ▾</button>
   <select id="sort">
     <option value="default">Fest order</option>
     <option value="reviewPct">Best reviewed</option>
@@ -265,13 +276,6 @@
         <option value="">Any release</option>
         <option value="dated">Has release date</option>
         <option value="undated">Undated / TBA</option>
-      </select>
-    </label>
-    <label class="fp-item"><span id="aiFilterLabel">Full game AI</span>
-      <select id="aiFilter" title="Filter by AI-generated content disclosure">
-        <option value="">Any</option>
-        <option value="yes" id="aiOptYes">Full game uses AI</option>
-        <option value="no" id="aiOptNo">No AI in full game</option>
       </select>
     </label>
   </div>
@@ -319,6 +323,17 @@
   <div id="tagList" class="tp-list"></div>
 </section>
 
+<section id="aiPanel" hidden>
+  <div class="tp-head">
+    <span class="tp-mode">Uncheck anything you don't want to see</span>
+    <button type="button" id="aiAll">Check all</button>
+    <button type="button" id="catLoad" title="Load ai_categories.json (you can also drop it anywhere on the page). Remembered for next time.">Load categories…</button>
+    <span class="tp-note" id="aiCatInfo"></span>
+  </div>
+  <div id="aiHint" class="tp-hint"></div>
+  <div id="aiList" class="tp-list ai-list"></div>
+</section>
+
 <div class="pager" id="pagerTop"></div>
 <div id="grid"></div>
 <div class="empty" id="empty" hidden>No demos match your filters.</div>
@@ -357,19 +372,135 @@ function aiLabels() {
         titleYes: "The full game's page discloses AI (demo page not scraped yet)",
         titleNo: "The full game's page has no AI disclosure (demo page not scraped yet)" };
 }
-function applyAiLabels() {
+
+// ---------- AI usage categories (optional side file: ai_categories.json) ----------
+// What each developer says AI was used for, labelled per appid. Kept separate from the
+// export so it can be loaded once and reused: it's remembered in localStorage and applied
+// by appid to whatever export is open. A demo may also carry its own `ai_cats` array.
+const AI_CATS_KEY = "nextfest_viewer_ai_cats_v1";
+// Listed most to least important; checkboxes and card chips follow this order.
+const AI_CAT_LABELS = {
+  art: "Art", writing: "Writing", voice: "Voice", music: "Music / SFX", code: "Code",
+  translation: "Translation", live: "Live generation", marketing: "Store page",
+  other: "Other", unspecified: "Unspecified"
+};
+const AI_CAT_ORDER = Object.keys(AI_CAT_LABELS);
+const AI_NOT_IN_GAME = new Set(["marketing", "other"]);  // everything else counts as in-game
+const aiCats = new Map();      // appid(string) -> string[] of category keys
+
+// Categories for a demo, or null if it has no disclosure / hasn't been labelled.
+function aiCatsOf(d) {
+  if (d.ai_disclosed !== true) return null;
+  return Array.isArray(d.ai_cats) ? d.ai_cats : (aiCats.get(String(d.appid)) || null);
+}
+const aiInGame = cats => cats.some(c => !AI_NOT_IN_GAME.has(c));
+
+// ---------- AI panel (checkboxes, like Tags) ----------
+// Every box starts checked. Unchecking one hides every demo that has it: uncheck "Art" to
+// hide games that used AI for art, or "No AI" to see only games that disclose AI.
+// Each demo carries a set of keys - "none" (no AI disclosed), or "any" plus its categories.
+const aiOff = new Set();   // keys the user has unchecked
+
+function aiKeys(d) {
+  const k = new Set();
+  if (d.ai_disclosed === false) { k.add("none"); return k; }
+  if (d.ai_disclosed !== true) return k;          // this demo wasn't checked for AI
+  k.add("any");
+  for (const c of aiCatsOf(d) || []) k.add(c);
+  return k;
+}
+
+const aiVisible = d => { for (const k of aiOff) if (d.__ai.has(k)) return false; return true; };
+
+// (Re)build the AI checkboxes with counts for the open dataset.
+function buildAiPanel() {
+  for (const d of DEMOS) d.__ai = aiKeys(d);
+  const count = key => DEMOS.reduce((n, d) => n + (d.__ai.has(key) ? 1 : 0), 0);
+  const box = (key, label, title = "") => {
+    const n = count(key);
+    return `<label class="tg"${title ? ` title="${esc(title)}"` : ""}><input type="checkbox" value="${key}"` +
+      `${aiOff.has(key) ? "" : " checked"}${n ? "" : " disabled"}>` +
+      `<span class="n">${esc(label)}</span> <span class="c">(${n.toLocaleString()})</span></label>`;
+  };
   const L = aiLabels();
-  $("aiFilterLabel").textContent = L.filter;
-  $("aiOptYes").textContent = L.optYes;
-  $("aiOptNo").textContent = L.optNo;
+  const hasAi = DEMOS.some(d => d.__ai.size);
+  const labelled = DEMOS.filter(d => aiCatsOf(d)).length;
+  let html;
+  if (!hasAi) {
+    html = `<div class="ai-note">This export has no AI-disclosure data. Export with "AI disclosures" ticked to filter by AI.</div>`;
+  } else {
+    html = `<div class="ai-group">Disclosure</div>` +
+      box("none", L.optNo, L.titleNo) + box("any", L.optYes, "Uncheck to hide every game that discloses AI");
+    html += labelled
+      ? `<div class="ai-group">AI used for</div>` + AI_CAT_ORDER.map(k => box(k, AI_CAT_LABELS[k],
+          `Uncheck to hide games that used AI for ${AI_CAT_LABELS[k].toLowerCase()}`)).join("")
+      : `<div class="ai-note">Load ai_categories.json (button above, or drop it on the page) to filter by what AI was used for.</div>`;
+  }
+  $("aiList").innerHTML = html;
+  // forget unchecked keys this dataset doesn't have
+  for (const k of [...aiOff]) if (!$("aiList").querySelector(`input[value="${k}"]:not(:disabled)`)) aiOff.delete(k);
+  $("aiCatInfo").textContent = labelled ? `${labelled.toLocaleString()} disclosures categorised` : "";
+  updateAiButton();
+}
+
+function updateAiButton() {
+  const n = aiOff.size;
+  const b = $("aiToggle");
+  b.textContent = "AI" + (n ? ` (${n} off)` : "") + " ▾";
+  b.classList.toggle("active", n > 0);
+}
+
+function updateAiHint() {
+  const el = $("aiHint");
+  if (!aiOff.size) { el.textContent = ""; return; }
+  const L = aiLabels();
+  const names = [...aiOff].map(k => k === "none" ? L.optNo : k === "any" ? L.optYes : AI_CAT_LABELS[k]);
+  // Category boxes can't see inside disclosures that aren't in ai_categories.json yet.
+  const uncat = DEMOS.reduce((c, d) => c + (d.ai_disclosed === true && !aiCatsOf(d) ? 1 : 0), 0);
+  const catOff = [...aiOff].some(k => AI_CAT_LABELS[k]);
+  el.textContent = `Hiding: ${names.join(", ")}.` + (catOff && uncat && !aiOff.has("any")
+    ? ` ${uncat.toLocaleString()} AI games aren't categorised yet and stay visible; load an updated ai_categories.json to sort them.` : "");
+}
+
+function setAiAllChecked() {
+  aiOff.clear();
+  for (const cb of $("aiList").querySelectorAll("input")) cb.checked = true;
+  updateAiButton();
+}
+
+function loadAiCategories(data) {
+  for (const [id, v] of Object.entries(data.items || {})) {
+    const cats = Array.isArray(v) ? v : (v && v.cats);
+    if (Array.isArray(cats)) aiCats.set(String(id), cats.filter(c => AI_CAT_LABELS[c]));
+  }
+  try {
+    localStorage.setItem(AI_CATS_KEY, JSON.stringify(
+      Object.fromEntries([...aiCats].map(([id, c]) => [id, c.join(",")]))));
+  } catch (e) { /* storage unavailable or full - categories just won't be remembered */ }
+  if (DEMOS.length) { buildAiPanel(); apply(); }
+}
+function restoreAiCategories() {
+  try {
+    const o = JSON.parse(localStorage.getItem(AI_CATS_KEY) || "null");
+    for (const [id, s] of Object.entries(o || {})) aiCats.set(id, s ? s.split(",") : []);
+  } catch (e) {}
 }
 
 // ---------- loading ----------
+function readFiles(files) {
+  for (const f of files) readFile(f);
+}
+
 function readFile(file) {
   $("dropErr").textContent = "";
   const reader = new FileReader();
   reader.onload = () => {
-    try { ingest(JSON.parse(reader.result)); }
+    try {
+      const data = JSON.parse(reader.result);
+      // ai_categories.json has an `items` map and no demos; anything else is an export.
+      if (data && data.items && !data.demos) loadAiCategories(data);
+      else ingest(data);
+    }
     catch (e) { $("dropErr").textContent = "Could not parse JSON: " + e.message; }
   };
   reader.onerror = () => { $("dropErr").textContent = "Failed to read file."; };
@@ -385,12 +516,8 @@ function ingest(data) {
   DEMOS = data.demos.map((d, i) => ({ ...d, __i: i, __score: reviewScore(d) }));
   byId.clear();
   for (const d of DEMOS) byId.set(String(d.appid), d);
-  // AI-disclosure controls only make sense if the file was scraped for it.
-  const hasAi = DEMOS.some(d => typeof d.ai_disclosed === "boolean");
   aiScope = (data.meta && data.meta.ai_scope) || null;
-  applyAiLabels();
-  $("aiFilter").disabled = !hasAi;
-  if (!hasAi) $("aiFilter").value = "";
+  buildAiPanel();
   buildTagPanel(DEMOS);
   const m = data.meta || {};
   // "Steam Next Fest October 2026" -> "October 2026" (the title already says the rest)
@@ -487,7 +614,7 @@ function buildTagPanel(demos) {
 }
 
 function updateFilterButton() {
-  const n = ["reviewFilter", "statusFilter", "releaseFilter", "aiFilter"].filter(id => $(id).value).length;
+  const n = ["reviewFilter", "statusFilter", "releaseFilter"].filter(id => $(id).value).length;
   const b = $("filterToggle");
   b.textContent = "Filters" + (n ? ` (${n})` : "") + " ▾";
   b.classList.toggle("active", n > 0);
@@ -531,7 +658,7 @@ function saveFilters() {
       reviewFilter: $("reviewFilter").value,
       statusFilter: $("statusFilter").value,
       releaseFilter: $("releaseFilter").value,
-      aiFilter: $("aiFilter").value,
+      aiOff: [...aiOff],
       sort: $("sort").value,
       sortDir,
       perPage: $("perPage").value,
@@ -550,7 +677,13 @@ function restoreFilters() {
   if (typeof s.reviewFilter === "string") $("reviewFilter").value = s.reviewFilter;
   if (typeof s.statusFilter === "string") $("statusFilter").value = s.statusFilter;
   if (typeof s.releaseFilter === "string") $("releaseFilter").value = s.releaseFilter;
-  if (typeof s.aiFilter === "string" && !$("aiFilter").disabled) $("aiFilter").value = s.aiFilter;
+  // AI boxes the user unchecked (saves from older AI-filter layouts are ignored)
+  aiOff.clear();
+  for (const k of Array.isArray(s.aiOff) ? s.aiOff : []) {
+    const cb = $("aiList").querySelector(`input[value="${k}"]:not(:disabled)`);
+    if (cb) { cb.checked = false; aiOff.add(k); }
+  }
+  updateAiButton();
   if (s.sort) $("sort").value = s.sort;
   if (s.tagMode) $("tagMode").value = s.tagMode;
   if (s.perPage) { $("perPage").value = String(s.perPage); PAGE_SIZE = +s.perPage; }
@@ -652,7 +785,6 @@ function apply() {
   const reviewF = $("reviewFilter").value;   // "" | "yes" | "no"
   const statusF = $("statusFilter").value;   // "" | "released" | "upcoming"
   const releaseF = $("releaseFilter").value; // "" | "dated" | "undated"
-  const aiF = $("aiFilter").value;           // "" | "yes" | "no"
 
   const invert = mode === "any" && sel.size > INVERT_THRESHOLD;
 
@@ -668,11 +800,7 @@ function apply() {
       if (releaseF === "dated" && !hasDate) return false;
       if (releaseF === "undated" && hasDate) return false;
     }
-    if (aiF) {
-      const usesAi = d.ai_disclosed === true;
-      if (aiF === "yes" && !usesAi) return false;
-      if (aiF === "no" && usesAi) return false;
-    }
+    if (aiOff.size && !aiVisible(d)) return false;
     if (sel.size) {
       // Untagged demos carry one virtual UNTAGGED tag so they flow through every mode.
       const vt = (d.tags && d.tags.length) ? d.tags.map(t => t.name) : [UNTAGGED];
@@ -704,7 +832,8 @@ function apply() {
 
   updateTagHint();
   updateFilterButton();
-  $("clear").hidden = !(q || sel.size || reviewF || statusF || releaseF || aiF);
+  updateAiHint();
+  $("clear").hidden = !(q || sel.size || reviewF || statusF || releaseF || aiOff.size);
   $("count").textContent = `${filtered.length.toLocaleString()} of ${DEMOS.length.toLocaleString()}`;
   $("empty").hidden = filtered.length > 0;
 
@@ -742,6 +871,11 @@ function cardHTML(d, rank) {
         ? `<span class="ai-chip yes" title="${aiL.titleYes}">${aiL.yes}</span>`
         : `<span class="ai-chip no" title="${aiL.titleNo}">${aiL.no}</span>`)
     : "";
+  // What the AI was used for (hover any chip for the developer's own wording).
+  const cats = aiCatsOf(d);
+  const catTip = d.ai_disclosure ? esc(d.ai_disclosure) : "";
+  const catChips = (cats || []).slice().sort((a, b) => AI_CAT_ORDER.indexOf(a) - AI_CAT_ORDER.indexOf(b)).map(c =>
+    `<span class="ai-chip cat${AI_NOT_IN_GAME.has(c) ? " soft" : ""}" title="${catTip}">${esc(AI_CAT_LABELS[c] || c)}</span>`).join("");
   const tags = topTags(d, 5).map(t =>
     `<span class="tag" data-tag="${esc(t.name)}">${esc(t.name)}</span>`).join("");
 
@@ -762,7 +896,7 @@ function cardHTML(d, rank) {
         ${(devHtml || rcount) ? `<div class="head-row">${devHtml || `<span class="dev"></span>`}${rcount}</div>` : ""}
       </div>
       ${dateBits.length ? `<div class="dates">${dateBits.join(" · ")}</div>` : ""}
-      ${aiChip ? `<div class="ai-row">${aiChip}</div>` : ""}
+      ${aiChip ? `<div class="ai-row">${aiChip}${catChips}</div>` : ""}
       <div class="tags">${tags}</div>
     </div>
   </article>`;
@@ -807,7 +941,8 @@ function esc(s) {
 
 // ---------- events ----------
 $("pick").addEventListener("click", () => $("file").click());
-$("file").addEventListener("change", e => e.target.files[0] && readFile(e.target.files[0]));
+$("catLoad").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", e => { readFiles(e.target.files); e.target.value = ""; });
 
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => {
@@ -817,9 +952,11 @@ const drop = $("drop");
   e.preventDefault(); if (ev === "dragleave" && e.target !== drop) return;
   drop.classList.remove("dragover");
 }));
-drop.addEventListener("drop", e => {
-  const f = e.dataTransfer.files[0];
-  if (f) readFile(f);
+// Files can be dropped anywhere, any time: an export, ai_categories.json, or both at once.
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  readFiles(e.dataTransfer.files);
 });
 
 let qTimer = null;
@@ -828,7 +965,6 @@ $("sort").addEventListener("change", apply);
 $("reviewFilter").addEventListener("change", apply);
 $("statusFilter").addEventListener("change", apply);
 $("releaseFilter").addEventListener("change", apply);
-$("aiFilter").addEventListener("change", apply);
 $("sortDir").addEventListener("click", () => {
   sortDir = -sortDir;
   const b = $("sortDir");
@@ -841,22 +977,31 @@ $("clear").addEventListener("click", () => {
   $("reviewFilter").value = "";
   $("statusFilter").value = "";
   $("releaseFilter").value = "";
-  if (!$("aiFilter").disabled) $("aiFilter").value = "";
+  setAiAllChecked();
   setAllTags(false);
   apply();
 });
 
 // ---- tag panel wiring ----
-$("tagToggle").addEventListener("click", () => {
-  const willOpen = $("tagPanel").hidden;
-  $("tagPanel").hidden = !willOpen;
-  if (willOpen) $("filterPanel").hidden = true;  // only one panel open at a time
+// Tags / Filters / AI: only one panel open at a time.
+const PANELS = { tagToggle: "tagPanel", filterToggle: "filterPanel", aiToggle: "aiPanel" };
+for (const [btn, panel] of Object.entries(PANELS)) {
+  $(btn).addEventListener("click", () => {
+    const willOpen = $(panel).hidden;
+    for (const p of Object.values(PANELS)) $(p).hidden = true;
+    $(panel).hidden = !willOpen;
+  });
+}
+
+// ---- AI panel wiring ----
+$("aiList").addEventListener("change", e => {
+  const cb = e.target;
+  if (cb.type !== "checkbox") return;
+  if (cb.checked) aiOff.delete(cb.value); else aiOff.add(cb.value);
+  updateAiButton();
+  apply();
 });
-$("filterToggle").addEventListener("click", () => {
-  const willOpen = $("filterPanel").hidden;
-  $("filterPanel").hidden = !willOpen;
-  if (willOpen) $("tagPanel").hidden = true;
-});
+$("aiAll").addEventListener("click", () => { setAiAllChecked(); apply(); });
 $("tagPanel").addEventListener("change", e => {
   const cb = e.target;
   if (cb.type !== "checkbox" || !cb.closest('#tagPinned, #tagList')) return;
@@ -930,6 +1075,14 @@ $("dropLogo").src = $("logo").src;
 // load persisted favorites before any rendering
 loadFavorites();
 refreshFavUI();
+
+// AI categories: reuse what was loaded last time; when served over http, also pick up
+// an ai_categories.json sitting next to this page (file:// can't fetch, so drop it in).
+restoreAiCategories();
+if (location.protocol.startsWith("http")) {
+  fetch("ai_categories.json").then(r => (r.ok ? r.json() : null))
+    .then(d => { if (d && d.items) loadAiCategories(d); }).catch(() => {});
+}
 </script>
 </body>
 </html>
