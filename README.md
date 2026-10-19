@@ -17,3 +17,4 @@ Includes `viewer.html` and `nextfest_demos_2026-10_October.json`
 4. In the opened Viewer page, click Choose JSON File
 5. Navigate to the location you downloaded this and select nextfest_demos_2026-10_October.json
 6. The demos will load and you can browse them!
+7. You can now also download the ai_categories file for the current nextfest. This can be loaded via the "Load categories..." button under the AI filters section. Once this file is loaded you can filter AI usage by category!
