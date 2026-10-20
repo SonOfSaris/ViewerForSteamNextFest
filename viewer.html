@@ -140,6 +140,18 @@
   }
   .tg:hover { background: #1f2f3f; }
   .tg input { accent-color: #66c0f4; flex: none; }
+  /* tri-state tag box: blank -> green check (has tag) -> red cross (doesn't have tag) */
+  .tg .tri {
+    flex: none; width: 14px; height: 14px; border: 1px solid #5f6b76; border-radius: 3px;
+    background: #0e1722; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; line-height: 1; color: #fff;
+  }
+  .tg[data-state="1"] .tri { background: #4c9a2a; border-color: #4c9a2a; }
+  .tg[data-state="1"] .tri::after { content: "✓"; }
+  .tg[data-state="2"] .tri { background: #c0392b; border-color: #c0392b; }
+  .tg[data-state="2"] .tri::after { content: "✕"; }
+  .tg[data-state="2"] .n { text-decoration: line-through; color: #c98a84; }
+  .tg:focus-visible { outline: 1px solid #66c0f4; }
   .tg .c { color: #5f6b76; }
   #tagPinned { padding: 2px 2px 0; }
   .tg.pinned { font-weight: 600; color: #cfe; border-bottom: 1px dashed #2a3f55; padding-bottom: 6px; margin-bottom: 2px; }
@@ -309,14 +321,7 @@
 <section id="tagPanel" hidden>
   <div class="tp-head">
     <input type="search" id="tagSearch" placeholder="Find a tag…">
-    <span class="tp-mode">Match
-      <select id="tagMode">
-        <option value="any">any</option>
-        <option value="all">all</option>
-      </select>
-      selected</span>
-    <button type="button" id="selAll">Select all</button>
-    <button type="button" id="selNone">Select none</button>
+    <button type="button" id="tagReset">Clear tags</button>
   </div>
   <div id="tagHint" class="tp-hint"></div>
   <div id="tagPinned"></div>
@@ -350,9 +355,8 @@ let filtered = [];     // current filtered+sorted view
 let page = 0;          // current page index (0-based)
 let PAGE_SIZE = 100;   // cards per page
 let sortDir = 1;       // 1 = sort's natural order, -1 = reversed
-const selectedTags = new Set();  // tag names currently checked in the panel
+const tagState = new Map();       // tag name -> 1 (must have it) | 2 (must not have it)
 const UNTAGGED = "::untagged::";   // sentinel value for the pinned "Untagged" filter
-const INVERT_THRESHOLD = 20;       // > this many selected => Match-any flips to exclusion (filter-out)
 const REVIEW_PRIOR = 10;           // pseudo-reviews pulling sparse demos toward the neutral 0.5 score
 const STORAGE_KEY = "nextfest_viewer_filters_v1";  // persisted filter/sort state
 const FAV_KEY = "nextfest_viewer_favorites_v1";    // persisted favorites (name+link+appid)
@@ -541,8 +545,10 @@ function assetUrl(d, name) {
   if (!a || !a.asset_url_format || !a[name]) return null;
   return CDN + a.asset_url_format.replace("${FILENAME}", a[name]);
 }
+// Tags arrive in Steam's weight order, demo tags first and then the full game's extras,
+// so the list order is the display order.
 function topTags(d, n) {
-  return (d.tags || []).slice().sort((a, b) => (b.weight || 0) - (a.weight || 0)).slice(0, n);
+  return (d.tags || []).slice(0, n);
 }
 function relTs(d) {
   const t = d.release_date ? Date.parse(d.release_date) : NaN;
@@ -602,14 +608,12 @@ function buildTagPanel(demos) {
     counts.set(t.name, (counts.get(t.name) || 0) + 1);
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const untagged = demos.filter(d => !(d.tags && d.tags.length)).length;
-  $("tagPinned").innerHTML =
-    `<label class="tg pinned"><input type="checkbox" value="${esc(UNTAGGED)}">` +
-    `<span class="n">Untagged</span> <span class="c">(${untagged.toLocaleString()})</span></label>`;
-  $("tagList").innerHTML = sorted.map(([name, c]) =>
-    `<label class="tg"><input type="checkbox" value="${esc(name)}">` +
-    `<span class="n">${esc(name)}</span> <span class="c">(${c.toLocaleString()})</span></label>`
-  ).join("");
-  selectedTags.clear();
+  const row = (value, label, c, cls = "") =>
+    `<div class="tg${cls}" role="checkbox" aria-checked="false" tabindex="0" data-tag="${esc(value)}" data-state="0">` +
+    `<span class="tri"></span><span class="n">${esc(label)}</span> <span class="c">(${c.toLocaleString()})</span></div>`;
+  $("tagPinned").innerHTML = row(UNTAGGED, "Untagged", untagged, " pinned");
+  $("tagList").innerHTML = sorted.map(([name, c]) => row(name, name, c)).join("");
+  tagState.clear();
   updateTagButton();
 }
 
@@ -620,33 +624,45 @@ function updateFilterButton() {
   b.classList.toggle("active", n > 0);
 }
 
+const tagLabel = name => (name === UNTAGGED ? "Untagged" : name);
+
 function updateTagHint() {
-  const n = selectedTags.size;
   const el = $("tagHint");
-  if (!n) { el.textContent = ""; return; }
-  const mode = $("tagMode").value;
-  if (mode === "all")
-    el.textContent = `Match all: showing demos that have all ${n} selected tags.`;
-  else if (n > INVERT_THRESHOLD)
-    el.textContent = `Filter-out mode (${n} selected): hiding demos that have any unselected tag.`;
-  else
-    el.textContent = `Match any: showing demos with at least one of the ${n} selected tags.`;
+  const inc = [...tagState].filter(([, v]) => v === 1).map(([k]) => tagLabel(k));
+  const exc = [...tagState].filter(([, v]) => v === 2).map(([k]) => tagLabel(k));
+  const parts = [];
+  // "A", "A and B", "A, B, and C" (or "or" for the excluded list)
+  const list = (xs, joiner) => xs.length < 3 ? xs.join(` ${joiner} `)
+    : `${xs.slice(0, -1).join(", ")}, ${joiner} ${xs[xs.length - 1]}`;
+  if (!inc.length && !exc.length) { el.textContent = ""; return; }
+  el.textContent = "Showing demos that are " +
+    (inc.length ? list(inc, "and") : "") +
+    (inc.length && exc.length ? " but " : "") +
+    (exc.length ? `not ${list(exc, "or")}` : "") + ".";
 }
 
 function updateTagButton() {
-  const n = selectedTags.size;
+  const n = tagState.size;
   const btn = $("tagToggle");
   btn.textContent = "Tags" + (n ? ` (${n})` : "") + " ▾";
   btn.classList.toggle("active", n > 0);
 }
 
-// Bulk check/uncheck every tag box and sync the selected set.
-function setAllTags(on) {
-  selectedTags.clear();
-  for (const cb of document.querySelectorAll('#tagPinned input, #tagList input')) {
-    cb.checked = on;
-    if (on) selectedTags.add(cb.value);
+const tagRows = () => document.querySelectorAll("#tagPinned .tg, #tagList .tg");
+
+// Set one tag's state (0 off, 1 has, 2 doesn't have) in both the map and its row.
+function setTagState(name, state) {
+  if (state) tagState.set(name, state); else tagState.delete(name);
+  for (const r of tagRows()) {
+    if (r.dataset.tag !== name) continue;
+    r.dataset.state = String(state);
+    r.setAttribute("aria-checked", state === 1 ? "true" : state === 2 ? "mixed" : "false");
   }
+}
+
+function clearTags() {
+  tagState.clear();
+  for (const r of tagRows()) { r.dataset.state = "0"; r.setAttribute("aria-checked", "false"); }
   updateTagButton();
 }
 
@@ -662,8 +678,8 @@ function saveFilters() {
       sort: $("sort").value,
       sortDir,
       perPage: $("perPage").value,
-      tagMode: $("tagMode").value,
-      tags: [...selectedTags]
+      tagsHave: [...tagState].filter(([, v]) => v === 1).map(([k]) => k),
+      tagsNot: [...tagState].filter(([, v]) => v === 2).map(([k]) => k)
     }));
   } catch (e) { /* storage unavailable (private mode / file://) - ignore */ }
 }
@@ -685,21 +701,19 @@ function restoreFilters() {
   }
   updateAiButton();
   if (s.sort) $("sort").value = s.sort;
-  if (s.tagMode) $("tagMode").value = s.tagMode;
   if (s.perPage) { $("perPage").value = String(s.perPage); PAGE_SIZE = +s.perPage; }
   if (s.sortDir === -1) {
     sortDir = -1;
     const b = $("sortDir"); b.textContent = "▲"; b.classList.add("active");
   }
-  if (Array.isArray(s.tags)) {
-    selectedTags.clear();
-    const boxes = [...document.querySelectorAll('#tagPinned input, #tagList input')];
-    for (const name of s.tags) {
-      const cb = boxes.find(x => x.value === name);  // only restore tags present in this dataset
-      if (cb) { cb.checked = true; selectedTags.add(name); }
-    }
-    updateTagButton();
-  }
+  // Older saves stored a plain list plus an any/all mode; only "all" means "has every tag".
+  const have = Array.isArray(s.tagsHave) ? s.tagsHave : (s.tagMode === "all" && Array.isArray(s.tags) ? s.tags : []);
+  const not = Array.isArray(s.tagsNot) ? s.tagsNot : [];
+  clearTags();
+  const present = new Set([...tagRows()].map(r => r.dataset.tag));  // only tags in this dataset
+  for (const name of have) if (present.has(name)) setTagState(name, 1);
+  for (const name of not) if (present.has(name)) setTagState(name, 2);
+  updateTagButton();
 }
 
 // ---------- favorites ----------
@@ -780,13 +794,11 @@ function downloadFavorites() {
 function apply() {
   const q = $("q").value.trim().toLowerCase();
   const sort = $("sort").value;
-  const mode = $("tagMode").value;           // "any" | "all"
-  const sel = selectedTags;
+  const sel = tagState;                      // name -> 1 has / 2 doesn't have
   const reviewF = $("reviewFilter").value;   // "" | "yes" | "no"
   const statusF = $("statusFilter").value;   // "" | "released" | "upcoming"
   const releaseF = $("releaseFilter").value; // "" | "dated" | "undated"
 
-  const invert = mode === "any" && sel.size > INVERT_THRESHOLD;
 
   filtered = DEMOS.filter(d => {
     if (reviewF) {
@@ -802,15 +814,11 @@ function apply() {
     }
     if (aiOff.size && !aiVisible(d)) return false;
     if (sel.size) {
-      // Untagged demos carry one virtual UNTAGGED tag so they flow through every mode.
+      // Untagged demos carry one virtual UNTAGGED tag so it can be required or excluded too.
       const vt = (d.tags && d.tags.length) ? d.tags.map(t => t.name) : [UNTAGGED];
-      if (mode === "all") {
-        for (const s of sel) if (!vt.includes(s)) return false;
-      } else if (invert) {
-        // exclusion: demo must carry NONE of the unselected tags (vt ⊆ selected)
-        for (const n of vt) if (!sel.has(n)) return false;
-      } else if (!vt.some(n => sel.has(n))) {
-        return false;
+      for (const [name, st] of sel) {
+        const has = vt.includes(name);
+        if (st === 1 ? !has : has) return false;
       }
     }
     if (!q) return true;
@@ -978,7 +986,7 @@ $("clear").addEventListener("click", () => {
   $("statusFilter").value = "";
   $("releaseFilter").value = "";
   setAiAllChecked();
-  setAllTags(false);
+  clearTags();
   apply();
 });
 
@@ -1002,16 +1010,21 @@ $("aiList").addEventListener("change", e => {
   apply();
 });
 $("aiAll").addEventListener("click", () => { setAiAllChecked(); apply(); });
-$("tagPanel").addEventListener("change", e => {
-  const cb = e.target;
-  if (cb.type !== "checkbox" || !cb.closest('#tagPinned, #tagList')) return;
-  if (cb.checked) selectedTags.add(cb.value); else selectedTags.delete(cb.value);
+// Each click cycles a tag: off -> has it (green) -> doesn't have it (red) -> off.
+function cycleTag(row) {
+  setTagState(row.dataset.tag, (Number(row.dataset.state) + 1) % 3);
   updateTagButton();
   apply();
+}
+$("tagPanel").addEventListener("click", e => {
+  const row = e.target.closest("#tagPinned .tg, #tagList .tg");
+  if (row) cycleTag(row);
 });
-$("selAll").addEventListener("click", () => { setAllTags(true); apply(); });
-$("selNone").addEventListener("click", () => { setAllTags(false); apply(); });
-$("tagMode").addEventListener("change", apply);
+$("tagPanel").addEventListener("keydown", e => {
+  const row = e.target.closest("#tagPinned .tg, #tagList .tg");
+  if (row && (e.key === " " || e.key === "Enter")) { e.preventDefault(); cycleTag(row); }
+});
+$("tagReset").addEventListener("click", () => { clearTags(); apply(); });
 $("tagSearch").addEventListener("input", e => {
   const term = e.target.value.trim().toLowerCase();
   for (const lbl of $("tagList").querySelectorAll(".tg"))
@@ -1025,10 +1038,7 @@ $("grid").addEventListener("click", e => {
   // click a tag on a card -> add it to the selection
   const t = e.target.closest(".tag");
   if (!t) return;
-  const name = t.dataset.tag;
-  selectedTags.add(name);
-  const cb = [...document.querySelectorAll('#tagPinned input, #tagList input')].find(x => x.value === name);
-  if (cb) cb.checked = true;
+  setTagState(t.dataset.tag, 1);   // card tag -> "has it"
   updateTagButton();
   apply();
   window.scrollTo({ top: 0, behavior: "smooth" });
